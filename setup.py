@@ -6634,7 +6634,8 @@ def fourgbvram_verdict(d, ram, vram_gb, hip, windows=False) -> str:
 
 # --kv for a model of strata-fourgbvram (docs/Q8_KV.md): the formats its architecture's attention caches have beside
 # fp16, the default.  The other engine's own are STRATA_KV.
-FOURGBVRAM_KV = {"q8_0": ("qwen36", "ornith", "ornith122", "tiel", "minicpmv", "kolibri", "flint", "lfm25", "groot"),
+FOURGBVRAM_KV = {"q8_0": ("qwen36", "ornith", "ornith122", "tiel", "minicpmv", "kolibri", "flint", "lfm25", "groot",
+                           "inkling"),
                  "int8": ("gemma4",), "int8k": ("gemma4",), "fp8": ("inkling",)}
 STRATA_KV = ("int8", "q4_0", "k8v4")
 
@@ -7205,8 +7206,14 @@ def fourgbvram_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, 
     # the attention caches' format (issue 183): --kv when this model has that one, else what its run config had;
     # --kv fp16 goes back to the default
     kv = a.kv or fourgbvram_saved_kv([cfg_path, adopted if adopted is not None and adopted.name == cfg_path.name else None])
-    if family not in FOURGBVRAM_KV.get(kv, ()):
+    if kv != "fp16" and family not in FOURGBVRAM_KV.get(kv, ()):
         kv = None
+    ink_fp8_unavailable = family == "inkling" and (hip or int(gpu["arch"]) < 80)
+    if ink_fp8_unavailable and kv == "fp8":
+        if a.kv == "fp8":
+            fail("Inkling 2 Mini --kv fp8 needs an NVIDIA card from Ampere on", "use --kv q8_0 or --kv fp16")
+        warn("the saved --kv fp8 cannot run on this card; using --kv q8_0 instead")
+        kv = "q8_0"
     conv = fourgbvram_saved_conv([cfg_path, adopted if adopted is not None and adopted.name == cfg_path.name else None])
     if conv is None:
         say()
@@ -7394,8 +7401,8 @@ def fourgbvram_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, 
     # there, and a larger card keeps the unchanged path until someone measures it there too.  --kv (or the config's)
     # wins over the family's default.
     if fam.get("kv") and vram <= 6 and not kv:
-        kv = fam["kv"]
-    if kv:
+        kv = "q8_0" if ink_fp8_unavailable else fam["kv"]
+    if kv and kv != "fp16":
         args += ["--kv", kv]
         ok(f"attention caches stored as {kv} (--kv in the config, docs/Q8_KV.md; --kv fp16 at setup takes it out)")
     if not multi and fourgbvram_batch(fam, d, vram, ctx):
@@ -8067,7 +8074,8 @@ def main() -> int:
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell). For a model of strata-fourgbvram "
                          "(docs/Q8_KV.md): q8_0 (half the KV cache's VRAM: Qwen3.6, Ornith, Tiel Coder, MiniCPM-V, "
-                         "Kolibri, Flint, LFM2.5), int8 or int8k (Gemma 4), fp16 (the default)")
+                         "Kolibri, Flint, LFM2.5, Inkling 2), int8 or int8k (Gemma 4), fp8 (Inkling 2 on Ampere or "
+                         "newer), fp16 (the engine's default)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (yes = the encoder on the GPU)")
     ap.add_argument("--vision-tokens", type=int, metavar="N",

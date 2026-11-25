@@ -239,7 +239,7 @@ class Main(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv=(), ram=128.0, vram=31.84, model=False, answers=None, win=False, n_gpus=1, family="glm",
-             cores=None):
+             cores=None, arch="120", amd=()):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others); the questions asked
         are kept in self.asked.  model: False, True (this file's M) or a size's name.  cores: (performance,
         efficiency) of a hybrid CPU."""
@@ -251,7 +251,7 @@ class Main(unittest.TestCase):
             self.asked.append(prompt)
             return next((v for k, v in answers.items() if k in prompt), "")
 
-        found = [{"index": i, "name": "NVIDIA GeForce RTX 5090", "vram_gb": vram, "arch": "120", "driver": "580.97"}
+        found = [{"index": i, "name": "NVIDIA GeForce RTX 5090", "vram_gb": vram, "arch": arch, "driver": "580.97"}
                  for i in range(n_gpus)]
 
         def fake_download(url, dst, what=None):
@@ -269,6 +269,13 @@ class Main(unittest.TestCase):
                                                         **({"portable": True} if portable else {})}))
             return eng
 
+        def fake_build_hip(gpu, llama, portable=False):
+            eng = self.t / setup.ENGINE_FOURGBVRAM_DIR
+            eng.mkdir(exist_ok=True)
+            (eng / "BUILD.json").write_text(json.dumps({"source": "local-hip", "backend": "hip",
+                                                        "lib_dirs": ["/rocm/lib"]}))
+            return eng
+
         patches = [
             mock.patch.object(setup, "ROOT", self.t),
             mock.patch.object(setup, "WIN", win),
@@ -276,7 +283,7 @@ class Main(unittest.TestCase):
             mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),
             mock.patch.object(setup, "gpus", lambda: found),
-            mock.patch.object(setup, "amd_gpus", lambda *a: []),
+            mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),
             mock.patch.object(setup, "cpu_cores", lambda: cores),
@@ -287,6 +294,7 @@ class Main(unittest.TestCase):
             mock.patch.object(setup, "get_prebuilt", mock.Mock(side_effect=AssertionError("the Qwen engine"))),
             mock.patch.object(setup, "build_engine_fourgbvram", fake_build),
             mock.patch.object(setup, "get_fourgbvram_prebuilt", lambda *a: False),
+            mock.patch.object(setup, "build_engine_fourgbvram_hip", fake_build_hip),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "whole_shard", lambda s: False),
             mock.patch.object(setup, "check_shards", lambda shards: None),

@@ -152,6 +152,53 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertRegex(out, r"not used with .*--inkling-small-card")
 
+    def test_a_4gb_turing_card_uses_q8_kv(self):
+        code, out, cfg = self.main(family="inkling", model="UD-Q4_K_XL", ram=64.0, vram=4.0, arch="75", win=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q8_0")
+
+    def test_a_4gb_ampere_card_keeps_fp8_kv(self):
+        code, out, cfg = self.main(family="inkling", model="UD-Q4_K_XL", ram=64.0, vram=4.0, arch="86")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "fp8")
+
+    def test_a_4gb_amd_card_uses_q8_kv(self):
+        amd = [{"index": 0, "name": "AMD Radeon RX 5500 XT", "vram_gb": 4.0,
+                "arch": "gfx1010", "driver": "amdgpu"}]
+        code, out, cfg = self.main(("--backend", "hip"), family="inkling", model="UD-Q4_K_XL", ram=64.0,
+                                   n_gpus=0, amd=amd)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q8_0")
+
+    def test_an_incompatible_saved_fp8_is_replaced_on_setup(self):
+        code, out, cfg = self.main(family="inkling", model="UD-Q4_K_XL", ram=64.0, vram=4.0, arch="86")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "fp8")
+        code, out, cfg = self.main(family="inkling", model="UD-Q4_K_XL", ram=64.0, vram=4.0, arch="75")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q8_0")
+        self.assertIn("saved --kv fp8 cannot run on this card", out)
+
+    def test_explicit_q8_is_kept_and_fp16_overrides_the_small_card_default(self):
+        code, out, cfg = self.main(("--kv", "q8_0"), family="inkling", model="UD-Q4_K_XL",
+                                   ram=64.0, vram=4.0, arch="86")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q8_0")
+        code, out, cfg = self.main(family="inkling", model="UD-Q4_K_XL", ram=64.0, vram=4.0, arch="86")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q8_0")
+        code, out, cfg = self.main(("--kv", "fp16"), family="inkling", model="UD-Q4_K_XL",
+                                   ram=64.0, vram=4.0, arch="86")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv", cfg["args"])
+
+    def test_explicit_fp8_is_refused_on_turing(self):
+        code, out, _ = self.main(("--kv", "fp8"), family="inkling", model="UD-Q4_K_XL",
+                                 ram=64.0, vram=4.0, arch="75")
+        self.assertNotEqual(code, 0)
+        self.assertIn("--kv fp8 needs an NVIDIA card from Ampere on", out)
+        self.assertIn("--kv q8_0 or --kv fp16", out)
+
     def test_requests_at_once_are_not_taken(self):
         code, out, _ = self.main(("--parallel", "4"), family="inkling", model="UD-Q3_K_XL", ram=64.0, vram=32607 / 1024)
         self.assertEqual(code, 0, out)

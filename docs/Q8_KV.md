@@ -1,12 +1,16 @@
 # The Q8_0 KV cache (`strata-fourgbvram --kv q8_0`)
 
-`strata-fourgbvram` can store its attention K and V caches in the ggml **Q8_0** format instead of fp16. It is
-opt-in: `--kv q8_0`. The default, `--kv fp16`, is unchanged and byte-identical to the build before this
+`strata-fourgbvram` can store its attention K and V caches in the ggml **Q8_0** format instead of fp16. At the
+engine, it is opt-in: `--kv q8_0`. The engine default, `--kv fp16`, is unchanged and byte-identical to the build before this
 option existed. The format halves the KV cache's VRAM. On the `qwen35moe` models the answers do not move; on
 Flint and LFM2.5 they move at about 2-3% of the steps (below).
 
 In this version it is offered for `qwen35moe` (Tiel, Ornith, Occamy), `kolibri1`, `flint` and `lfm2moe`
-(LFM2.5-24B-A2B) files; another architecture is rejected at load.
+(LFM2.5-24B-A2B), and `inkling2` / `inkling2_loop` (Inkling 2 Mini) files; another architecture is rejected at load.
+
+On a 6 GB or smaller card, setup chooses Q8_0 for Inkling on Turing and HIP, where its FP8 attention path cannot
+run; it keeps FP8 on Ampere and newer NVIDIA cards. Q8_0 changes the cache's precision; no 4 GB Turing quality
+comparison is claimed.
 
 Setup takes it too: `setup --family flint --kv q8_0` (`setup.sh` / `setup.bat`) writes `--kv q8_0` into the model's
 run config, and setup run again for that model keeps it; `--kv fp16` takes it out. For a model whose architecture
