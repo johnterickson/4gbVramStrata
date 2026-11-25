@@ -9,7 +9,7 @@ __pycache__/
 .pytest_cache/
 
 # setup.py outputs and downloads (engine, packs, models, logs)
-/engine/
+/engine*/
 /build/
 /build*/
 /dist/
@@ -17,11 +17,26 @@ __pycache__/
 /mtp/
 /models/
 /Strata-data/
-third_party/llama.cpp/
+third_party/llama.cpp*/
 third_party/*.zip
 *.done
 *.log
 strata-*.json
+strata-*.json.bak
 strata-*.txt
 run-*.sh
 run-*.bat
+
+# Machine-specific settings and private working files are never image contents.
+.env
+.env.*
+.local/
+.strata/
+.strata-mcp/
+configs/
+apps/
+designs/
+.vscode/
+.idea/
+.cursor/
+.ccache/

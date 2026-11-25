@@ -7,15 +7,80 @@ Windows).
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SH = shutil.which("sh")
+
+
+class DockerBuild(unittest.TestCase):
+    """Run the Dockerfile's actual build script with the compiler and source download stubbed."""
+
+    def run_build(self, target, vision="0"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "cuda" / "bin").mkdir(parents=True)
+        calls = []
+
+        def cmake_build(src, bdir, name, defs, vcvars, bat):
+            calls.append((name, defs))
+            folder = bdir / "bin" if name == "strata-vision" else bdir
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(b"compiled")
+
+        setup = SimpleNamespace(
+            ROOT=root, EXE="strata", FOURGBVRAM_EXE="strata-fourgbvram",
+            ENGINE_FOURGBVRAM_DIR="engine-fourgbvram", KQ_LIB="kq.so", VEXE="strata-vision",
+            ENGINE_SOURCES=("src",), VISION_SOURCES=("tools/vision",),
+            get_llama_cpp=mock.Mock(return_value=root / "llama.cpp"),
+            find_nvcc=lambda: (str(root / "cuda" / "bin" / "nvcc"), None),
+            cmake_build=cmake_build, source_version=lambda: "test",
+            source_hash=lambda parts: "engine-hash" if parts == ("src",) else "vision-hash",
+        )
+        text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        script = text.split("RUN .venv/bin/python - <<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
+        env = {"CUDA_ARCHITECTURES": "75;86", "BUILD_VISION": vision}
+        if target is not None:
+            env["BUILD_ENGINE"] = target
+        with mock.patch.dict(sys.modules, {"setup": setup}), mock.patch.dict(os.environ, env, clear=True):
+            exec(compile(script, str(ROOT / "Dockerfile"), "exec"), {})
+        return root, calls, setup
+
+    def test_fourgbvram_build_installs_the_engine_and_matching_metadata(self):
+        root, calls, _ = self.run_build("strata-fourgbvram")
+        self.assertEqual(calls[0][0], "strata-fourgbvram")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=75;86", calls[0][1])
+        folder = root / "engine-fourgbvram"
+        self.assertEqual((folder / "strata-fourgbvram").read_bytes(), b"compiled")
+        meta = json.loads((folder / "BUILD.json").read_text())
+        self.assertEqual(meta["src"], "engine-hash")
+        self.assertEqual(meta["archs"], [75, 86])
+        self.assertEqual(meta["toolkit"], 13)
+        self.assertEqual(meta["vision"], "none")
+        self.assertFalse((root / "engine").exists())
+
+    def test_default_build_preserves_strata_and_the_image_encoder(self):
+        root, calls, _ = self.run_build(None, vision="1")
+        self.assertEqual([name for name, _ in calls], ["strata", "strata-vision"])
+        self.assertTrue((root / "engine" / "strata").is_file())
+        self.assertTrue((root / "engine" / "strata-vision").is_file())
+        meta = json.loads((root / "engine" / "BUILD.json").read_text())
+        self.assertEqual(meta["vision_src"], "vision-hash")
+
+    def test_unknown_engine_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "BUILD_ENGINE"):
+            self.run_build("unknown")
 
 
 @unittest.skipIf(os.name == "nt" or SH is None, "needs POSIX sh and symlinks")

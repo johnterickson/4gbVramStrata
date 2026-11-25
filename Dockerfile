@@ -13,6 +13,8 @@
 # Build:
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
+#   docker build -t strata-inkling --build-arg BUILD_ENGINE=strata-fourgbvram \
+#     --build-arg CUDA_ARCHITECTURES=75 --build-arg BUILD_VISION=0 .  # Inkling on Turing
 #
 # Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
 #   docker run --rm --gpus all \
@@ -58,6 +60,7 @@ COPY . .
 # refuses anything below 75. BUILD_VISION=0 skips the image encoder build.
 ARG CUDA_ARCHITECTURES=75;80;86;89;120
 ARG BUILD_VISION=1
+ARG BUILD_ENGINE=strata
 
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
@@ -73,12 +76,15 @@ RUN .venv/bin/python - <<'PYEOF'
 import json, os, pathlib, shutil
 import setup
 
+target = os.environ.get("BUILD_ENGINE", "strata")
+if target not in ("strata", "strata-fourgbvram"):
+    raise ValueError("BUILD_ENGINE must be strata or strata-fourgbvram")
 llama = setup.get_llama_cpp()
 nvcc, _ = setup.find_nvcc()
 arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
 
-setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
+setup.cmake_build(setup.ROOT, setup.ROOT / "build", target,
     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",
      f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
      f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
@@ -87,16 +93,18 @@ if vision != "none":
         [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
          f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
 
-eng = setup.ROOT / "engine"
+exe = setup.FOURGBVRAM_EXE if target == "strata-fourgbvram" else setup.EXE
+eng = setup.ROOT / (setup.ENGINE_FOURGBVRAM_DIR if target == "strata-fourgbvram" else "engine")
 eng.mkdir(exist_ok=True)
-shutil.copy2(setup.ROOT / "build" / setup.EXE, eng / setup.EXE)
-if (setup.ROOT / "build" / setup.KQ_LIB).exists():      # the K-quant MMQ prompt library (UD-Q4/Q5/Q6_K_XL files)
+shutil.copy2(setup.ROOT / "build" / exe, eng / exe)
+if target == "strata" and (setup.ROOT / "build" / setup.KQ_LIB).exists():
     shutil.copy2(setup.ROOT / "build" / setup.KQ_LIB, eng / setup.KQ_LIB)
 if vision != "none":
     shutil.copy2(setup.ROOT / "build-vision" / "bin" / setup.VEXE, eng / setup.VEXE)
 bindir = pathlib.Path(nvcc).parent
 meta = {"source": "local", "version": setup.source_version(),
         "archs": [int(a.split("-")[0]) for a in arch.split(";") if a.split("-")[0].isdigit()], "vision": vision,
+        "toolkit": 13,
         "cuda_dirs": [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()],
         "src": setup.source_hash(setup.ENGINE_SOURCES),
         "vision_src": setup.source_hash(setup.VISION_SOURCES) if vision != "none" else None}
