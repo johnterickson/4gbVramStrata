@@ -101,8 +101,10 @@ The same idea, in a container (NVIDIA cards).
 2. Build (this compiles the engine into the image, so the container never compiles):
    `docker build -t strata .`
    `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
-   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
+   The default covers Turing (75), RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
    set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+   The default builds `strata` for Qwen3.8-Flash-Next. For Inkling, Clover, Gemma 4 and the other
+   `strata-fourgbvram` families, add `--build-arg BUILD_ENGINE=strata-fourgbvram`.
 3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
    `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
 
@@ -141,6 +143,61 @@ The same idea, in a container (NVIDIA cards).
    Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
    Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
    `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
+
+### Inkling 2 Mini with existing model files
+
+[compose.inkling.yaml](../compose.inkling.yaml) builds `strata-fourgbvram` for Turing (`sm_75`), without the image
+encoder, and exposes the API only on `127.0.0.1:8080`. It selects one GPU by UUID, keeps the data on the host,
+and restarts the container unless it was explicitly stopped.
+
+1. Create a local `.env.inkling` next to the Compose file (git-ignored):
+
+   ```text
+   STRATA_DATA_DIR=D:\src\4gbVramStrata-data
+   STRATA_GPU_UUID=GPU-your-inference-card-uuid
+   CUDA_ARCHITECTURES=75
+   ```
+
+   On Linux use the data directory's Linux path instead. Read the UUID with
+   `nvidia-smi --query-gpu=name,uuid --format=csv,noheader`; do not select the card that handles desktop graphics.
+
+2. Put a **Linux-path** model config at
+   `<STRATA_DATA_DIR>/config/strata-inkling-ud-q4_k_xl-docker.json`. Reuse the existing config's engine arguments,
+   replacing its model and pack paths with `/data/models/...` and `/data/packs/...`. Set `exe` to
+   `/opt/strata/engine-fourgbvram/strata-fourgbvram`, `cwd` to `/opt/strata`, `host` to `0.0.0.0`,
+   `port` to `8080`, `open_browser` to `false`, and the log to a path under `/data`.
+   Remove Windows `lib_dirs`. Compose restricts CUDA to the inference card by UUID. On Docker Desktop/WSL,
+   `nvidia-smi` may still list all host GPUs even though CUDA sees only the selected card. Check before starting:
+
+   ```text
+   docker compose --env-file .env.inkling -f compose.inkling.yaml run --rm --no-deps --entrypoint nvidia-smi inkling --query-gpu=index,name,uuid --format=csv,noheader
+   ```
+
+   If it lists other cards, set the config's `gpu` to the selected UUID's **nvidia-smi index inside the container**
+   (for example, `"gpu": 1` for the GTX beside a Quadro). Setup needs that index for build checks and monitoring;
+   the engine still sees the selected card as CUDA device 0. Do not reuse a host index without checking it.
+   Keep `--max-context 32768`, `--kv q8_0`, and `"api_monitor": true` for the 4 GB Turing setup.
+   The downloaded GGUF, tokenizer and expert profile must all exist under the mounted data directory.
+   Leave enough Docker/WSL memory for the model and its working buffers; 32 GiB is the starting allocation here.
+
+3. Build before stopping a working native server:
+
+   ```text
+   docker compose --env-file .env.inkling -f compose.inkling.yaml build
+   ```
+
+   Stop the native server gracefully before starting the container: both would otherwise use the same GPU and port.
+
+   ```text
+   docker compose --env-file .env.inkling -f compose.inkling.yaml up -d
+   docker compose --env-file .env.inkling -f compose.inkling.yaml logs -f
+   ```
+
+   The OpenAI-compatible URL stays `http://127.0.0.1:8080/v1`, with model
+   `inkling-2-mini-ud-q4_k_xl`. Check `/health` and a real chat request before considering the migration complete.
+   The Linux config and logs persist in the data directory; settings saved by the API survive container recreation.
+   This is not a Windows-versus-Linux performance comparison. Windows-mounted model files in Docker Desktop
+   can have different I/O costs from files stored in the Linux filesystem.
 
 ## Older CPUs (experimental)
 

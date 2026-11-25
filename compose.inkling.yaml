@@ -1,0 +1,40 @@
+name: strata-inkling
+
+services:
+  inkling:
+    image: strata-inkling:local
+    build:
+      context: .
+      args:
+        BUILD_ENGINE: strata-fourgbvram
+        CUDA_ARCHITECTURES: "${CUDA_ARCHITECTURES:-75}"
+        BUILD_VISION: "0"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ports:
+      - "127.0.0.1:${STRATA_PORT:-8080}:8080"
+    environment:
+      FAMILY: inkling
+      MODEL: UD-Q4_K_XL
+      CONFIG: /data/config/strata-inkling-ud-q4_k_xl-docker.json
+      CUDA_VISIBLE_DEVICES: "${STRATA_GPU_UUID:?Set STRATA_GPU_UUID to the inference GPU UUID}"
+      PORT: "8080"
+    volumes:
+      - type: bind
+        source: "${STRATA_DATA_DIR:?Set STRATA_DATA_DIR to the existing model data directory}"
+        target: /data
+        bind:
+          create_host_path: false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${STRATA_GPU_UUID:?Set STRATA_GPU_UUID to the inference GPU UUID}"
+              capabilities: [gpu]
