@@ -24,6 +24,10 @@ Engines before 0.1.45-poly.6 refused such files; run `UPDATE.bat` (Linux: `./upd
 Update it (NVIDIA App or [nvidia.com/drivers](https://www.nvidia.com/drivers)), restart the PC, and run
 `START-HERE.bat` again.
 
+**"No CUDA-capable device is detected" with several NVIDIA cards.**
+An older card can appear in `nvidia-smi` but not in CUDA, changing CUDA's device numbers. The server resolves the
+chosen `nvidia-smi` number to a GPU UUID; check that the config selects the intended card and that `nvidia-smi` works.
+
 **It says port 8080 is already in use.**
 4gbVramStrata is already running. Look for its window. Or another program uses the port: `START-HERE.bat --port 8081`.
 Only an address that is really taken says "already in use". Any other reason (Windows keeps the port reserved, or

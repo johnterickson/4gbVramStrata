@@ -3005,15 +3005,40 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     return out
 
 
+def cuda_visible_devices(indices: list[int]) -> str:
+    """Translate nvidia-smi GPU numbers to UUIDs, including when CUDA omits an older card."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, check=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[strata] cannot map NVIDIA GPU numbers to UUIDs ({e}); using CUDA ordinals, which may differ from "
+              "nvidia-smi", file=sys.stderr, flush=True)
+        return ",".join(str(i) for i in indices)
+    try:
+        found = {}
+        for line in r.stdout.splitlines():
+            idx, uuid = (part.strip() for part in line.split(",", 1))
+            if not uuid.startswith("GPU-"):
+                raise ValueError(f"invalid GPU UUID {uuid!r}")
+            found[int(idx)] = uuid
+    except ValueError as e:
+        raise RuntimeError(f"cannot read NVIDIA GPU UUIDs: {e}") from e
+    missing = [i for i in indices if i not in found]
+    if missing:
+        raise RuntimeError(f"NVIDIA GPU number(s) not found by nvidia-smi: {', '.join(map(str, missing))}")
+    return ",".join(found[i] for i in indices)
+
+
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
     if hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
-    elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
-        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
-        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
+    elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        if "CUDA_VISIBLE_DEVICES" not in (cfg.get("env") or {}):
+            env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices(ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
@@ -3078,7 +3103,7 @@ def vision_env(cfg: dict, env: dict) -> dict:
         env["HIP_VISIBLE_DEVICES"] = str(dev)
     else:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env["CUDA_VISIBLE_DEVICES"] = str(dev)
+        env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices([int(dev)]) if str(dev).isdigit() else str(dev)
     return env
 
 

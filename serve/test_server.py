@@ -1957,12 +1957,37 @@ class GpuChoice(unittest.TestCase):
 
     def test_env(self):
         from serve.server import child_env
-        env = child_env({"gpu": 1})
-        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1")
+        with mock.patch("serve.server.cuda_visible_devices", return_value="GPU-gtx") as visible:
+            env = child_env({"gpu": 1})
+        visible.assert_called_once_with([1])
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "GPU-gtx")
         self.assertEqual(env["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
         plain = child_env({})                     # no choice: the environment as it was (existing installs)
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
+
+    def test_smi_numbers_are_mapped_to_uuids_in_order(self):
+        from serve.server import cuda_visible_devices
+        output = "0, GPU-old\n1, GPU-gtx\n2, GPU-third\n"
+        with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(stdout=output)):
+            self.assertEqual(cuda_visible_devices([1]), "GPU-gtx")
+            self.assertEqual(cuda_visible_devices([2, 1]), "GPU-third,GPU-gtx")
+            with self.assertRaisesRegex(RuntimeError, "GPU number.*3"):
+                cuda_visible_devices([3])
+
+    def test_missing_nvidia_smi_warns_before_using_ordinals(self):
+        from serve.server import cuda_visible_devices
+        err = io.StringIO()
+        with mock.patch("serve.server.subprocess.run", side_effect=FileNotFoundError("nvidia-smi")), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(cuda_visible_devices([1]), "1")
+        self.assertIn("CUDA ordinals", err.getvalue())
+
+    def test_explicit_cuda_visibility_is_not_overridden(self):
+        from serve.server import child_env
+        with mock.patch("serve.server.cuda_visible_devices", side_effect=AssertionError("not needed")):
+            env = child_env({"gpu": 1, "env": {"CUDA_VISIBLE_DEVICES": "GPU-custom"}})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "GPU-custom")
 
     def test_gdn_mma_env_override(self):
         """The existing model env map can opt out of a parent process's kernel request."""
@@ -2003,7 +2028,9 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(ordered_gpus(fast_small, speeds, {0: 12288}), [1, 0])             # a card unmeasured: reorder
         self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0},
                                     {0: 8192, 1: 12288, 2: 24576}), [0, 1, 2])  # tail 1 (12G) < given tail 2 (24G)
-        self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
+        with mock.patch("serve.server.cuda_visible_devices", return_value="GPU-first,GPU-last"):
+            self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"],
+                             "GPU-first,GPU-last")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 
     def test_kfd_scores(self):
@@ -2023,11 +2050,12 @@ class GpuChoice(unittest.TestCase):
         # #408: the image encoder on its own card; the engine's environment stays as it was
         from serve.server import child_env, vision_env
         cfg = {"gpu": [0, 1], "gpu_order": "as_given", "vision": {"exe": "v", "cuda_device": 2}}
-        env = child_env(cfg)
-        venv = vision_env(cfg, env)
-        self.assertEqual(venv["CUDA_VISIBLE_DEVICES"], "2")
+        with mock.patch("serve.server.cuda_visible_devices", side_effect=["GPU-first,GPU-second", "GPU-vision"]):
+            env = child_env(cfg)
+            venv = vision_env(cfg, env)
+        self.assertEqual(venv["CUDA_VISIBLE_DEVICES"], "GPU-vision")
         self.assertEqual(venv["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
-        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "GPU-first,GPU-second")
         plain = {"gpu": [0, 1], "vision": {"exe": "v"}}
         self.assertIs(vision_env(plain, env), env)          # no cuda_device: the engine's environment, unchanged
 
@@ -2537,8 +2565,9 @@ class PeerDevice(unittest.TestCase):
 
     def test_both_cards_visible(self):
         from serve.server import child_env
-        env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})
-        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
+        with mock.patch("serve.server.cuda_visible_devices", return_value="GPU-first,GPU-second"):
+            env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "GPU-first,GPU-second")
 
 
 class LearnedProfile(unittest.TestCase):
